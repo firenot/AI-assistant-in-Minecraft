@@ -1,0 +1,6 @@
+{
+    "bot_on": false,
+    "server_ip": "localhost",
+    "port": "25565",
+    "max_messages": 25
+}

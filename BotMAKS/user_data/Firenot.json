@@ -1,0 +1,12 @@
+{
+    "bot_on": false,
+    "server_ip": "localhost ",
+    "port": "25565",
+    "max_messages": 15,
+    "chat_history": [
+        "/task2",
+        "/task8",
+        "/task4",
+        "/task10"
+    ]
+}
