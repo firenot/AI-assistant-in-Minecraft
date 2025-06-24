@@ -1,12 +1,15 @@
 {
     "bot_on": false,
-    "server_ip": "localhost ",
+    "server_ip": "localhost",
     "port": "25565",
-    "max_messages": 15,
+    "server_folder": "E:\\gpt\\AI-assistant-in-Minecraft",
+    "max_messages": 10,
     "chat_history": [
         "/task2",
-        "/task8",
-        "/task4",
-        "/task10"
-    ]
+        "/task2",
+        "/task2",
+        "/task2"
+    ],
+    "level_seed": "1470846385",
+    "level_type": "AMPLIFIED"
 }

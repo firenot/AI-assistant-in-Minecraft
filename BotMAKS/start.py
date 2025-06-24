@@ -4,7 +4,7 @@ import time
 import threading
 import os
 # === Настройки ===
-TREE_BLOCK = 'oak wood'
+TREE_BLOCKS = ['oak wood',"dark oak wood"]
 WOOD_PLANKS = 'oak_planks'
 STICK = 'stick'
 CRAFTING_TABLE = 'crafting_table'
@@ -72,19 +72,15 @@ def read_stderr():
 threading.Thread(target=read_stderr, daemon=True).start()
 
 
-# === Очистка буфера вывода ===
-def clear_output_buffer():
-    while True:
-        line = node_process.stdout.readline()
-        if not line or "Бот заспавнился" in line:
-            break
-
 
 # === Ожидание спавна бота ===
 def wait_for_spawn():
-    clear_output_buffer()
-    print("[Python] Бот запущен и готов к работе")
-    return True
+    while True:
+        line = node_process.stdout.readline()
+        line = line.strip()
+        if "Бот заспавнился" in line:
+            print("[Python] Бот успешно загрузился")
+            return True
 
 
 # === Отправка команд ===
@@ -95,16 +91,29 @@ def send_command(cmd):
 
 
 # === Чтение событий и данных ===
-def read_output():
-    while True:
+def read_output(timeout=10):
+    """
+    Читает вывод из stdout и возвращает:
+    - "goal_reached"
+    - "digging_completed"
+    - "look_finished"
+    - "look_at_complete"
+    - ("message", username:message)
+    - {"type": "data", "content": data}
+    """
+    start_time = time.time()
+    while time.time() - start_time < timeout:
         line = node_process.stdout.readline()
         if not line:
-            break
+            time.sleep(0.1)
+            continue
+
         line = line.strip()
 
         if line.startswith("EVENT"):
             parts = line.split()
             event_type = parts[1]
+
             if event_type == "goal_reached":
                 return "goal_reached"
             elif event_type == "digging_completed":
@@ -115,19 +124,45 @@ def read_output():
                 return "look_at_complete"
             elif event_type == "digging":
                 return "digging"
-            elif event_type =="message":
-                return ("message",parts[2])
+            elif event_type == "message":
+                try:
+                    user, msg = parts[2].split(":", 1)
+                    return ("message", user, msg)
+                except Exception as e:
+                    print("[Ошибка парсинга сообщения]", e)
+                    return ("message", "unknown", parts[2])
 
-        elif line == "DATA_READY":
-            data_line = node_process.stdout.readline().strip()
+        elif line == "CACHE_UPDATE":
             try:
+                data_line = node_process.stdout.readline().strip()
                 data = json.loads(data_line)
                 print("[Python] Получены данные о мире и позиции")
                 return {"type": "data", "content": data}
             except Exception as e:
                 print("[Ошибка парсинга данных]", e)
 
+        elif line.startswith("ERROR"):
+            print(f"[JS Error] {line}")
+
+    print("[read_output] Таймаут ожидания события")
     return None
+
+def read_cache_update():
+    print("[Python] Ожидаем обновление кеша...")
+    while True:
+        line = node_process.stdout.readline()
+        if not line:
+            continue
+        line = line.strip()
+        if line == "CACHE_UPDATE":
+            data_line = node_process.stdout.readline().strip()
+            try:
+                data = json.loads(data_line)
+                print(f"[Python] Получен кеш: {len(data['cache'])} блоков")
+                return data
+            except Exception as e:
+                print("[Ошибка парсинга кеша]", e)
+
 
 
 # === Ждём завершения осмотра ===
@@ -153,17 +188,15 @@ def wait_look_at():
 # === Поиск ближайших бревен ===
 def find_closest_logs(cache, position, count=3):
     candidates = []
-
     for key in cache:
         name = cache[key]
-        if TREE_BLOCK in name.lower():
+        if name.lower() in TREE_BLOCKS:
             x, y, z = map(int, key.split(","))
             dx = x - position['x']
             dy = y - position['y']
             dz = z - position['z']
             dist = dx * dx + dy * dy + dz * dz
             candidates.append((dist, {"x": x, "y": y, "z": z}))
-
     # Сортируем по расстоянию и берем первые count
     candidates.sort(key=lambda x: x[0])
     return [item[1] for item in candidates[:count]]
@@ -232,136 +265,93 @@ def get_inventory():
 
 # === Основной цикл ===
 def main():
-    current_pos = {"x": 0, "y": 0, "z": 0}
-
+    print("[Python] Запускаем JS-бота...")
     if not wait_for_spawn():
         print("[Ошибка] Бот не смог заспавниться")
         return
 
-    try:
-        user,message=wait_for_event("message",20)
-        add_message_to_chat(user, message)
-        if "дерево" in message:
-            time.sleep(2)
-            send_command("say Хорошо, нужно только найти немного дерева")
-            add_message_to_chat(user, "MAKC: Хорошо, нужно только найти немного дерева")
-            wait_for_event("said")
-            # === 1. Осматриваемся для поиска ресурсов ===
-            print("[Python] Осматриваемся...")
-            send_command("look_around")
-            look_finished()
+    print("[Python] Бот успешно заспавнился")
 
-            data = None
-            while True:
-                result = read_output()
-                if isinstance(result, dict) and result.get("type") == "data":
-                    data = result["content"]
-                    current_pos = data["position"]
-                    print(f"[Python] Текущая позиция: {current_pos}")
-                    break
-                time.sleep(0.1)
+    # === Ждём команду от игрока ===
+    print("[Python] Ожидаем сообщение от игрока...")
+    while True:
+        result = read_output(timeout=30)
+        if isinstance(result, tuple) and result[0] == "message":
+            _, user, message = result
+            print(f"[Python] Получено сообщение от {user}: '{message}'")
+            add_message_to_chat(user, message)
 
-            # === 2. Найдем и добудем 3 ближайших бревна ===
-            """trees = find_closest_logs(data["cache"], current_pos, REQUIRED_LOGS)
-            print(trees)
-            if not trees or len(trees) < REQUIRED_LOGS:
-                print(f"[Python] Не найдено достаточного количества бревен (нужно {REQUIRED_LOGS})")
-                return"""
-            trees=[{"x":257,"y":71,"z":-188},{"x":257,"y":72,"z":-188},{"x":257,"y":73,"z":-188}]
-            print(f"[Python] Найдены бревна: {trees}")
-            send_command("say Увидел дерево недалеко")
-            add_message_to_chat(user, "MAKC: Увидел дерево недалеко")
-            wait_for_event("said")
-            time.sleep(0.3)
-            send_command(f"goto {trees[1]['x']} {trees[1]['y']} {trees[1]['z']}")
-            wait_for_event("goal_reached")
-            time.sleep(0.2)
-            # Поворачиваемся к блоку
-            send_command(f"look_at {trees[0]['x']} {trees[0]['y']} {trees[0]['z']}")
-            wait_look_at()
+            if "дерево" in message.lower():
+                send_command("say Хорошо, нужно только найти немного дерева")
+                add_message_to_chat(user, "MAKC: Хорошо, нужно только найти немного дерева")
+                wait_for_event("said")
 
-            # Копаем
-            send_command(f"dig {trees[0]['x']} {trees[0]['y']} {trees[0]['z']}")
-            wait_for_event("digging_completed")
+                # === Осматриваемся для поиска ресурсов ===
+                print("[Python] Осматриваемся...")
+                send_command("look_around")
+                if look_finished():
+                    print("[Python] Осмотр окончен")
 
-            """
-                # Подходим к дереву
-                send_command(f"goto {tree['x']} {tree['y']} {tree['z']}")
-                wait_for_event("goal_reached")
+                # === Получаем данные о мире ===
+                world_data = None
+                for _ in range(10):  # Пытаемся получить данные до 10 раз
+                    result = read_output(timeout=5)
+                    if isinstance(result, dict) and result.get("type") == "data":
+                        world_data = result["content"]
+                        break
+                if not world_data:
+                    print("[Ошибка] Не удалось получить данные о мире")
+                    return
 
-                # Поворачиваемся к блоку
-                send_command(f"look_at {tree['x']} {tree['y']} {tree['z']}")
-                wait_look_at()
+                current_pos = world_data["position"]
+                block_cache = world_data["cache"]
 
-                # Копаем
-                send_command(f"dig {tree['x']} {tree['y']} {tree['z']}")
-                wait_for_event("digging_completed")
-                time.sleep(0.2)"""
-            # === 3. Ждём обновления инвентаря после добычи ===
-            inventory = get_inventory()
-            print("[Python] Инвентарь после добычи:", inventory)
+                print(f"[Python] Текущая позиция: {current_pos}")
+                print(f"[Python] Количество блоков в кеше: {len(block_cache)}")
 
-            if inventory.get('log', 0) < 3:
-                print("[Ошибка] Недостаточно бревен в инвентаре")
-                return
+                # === Поиск деревьев ===
+                trees = find_closest_logs(block_cache, current_pos, count=3)
+                if not trees or len(trees) < 1:
+                    print("[Python] Не найдено деревьев рядом")
+                    print(block_cache)
+                    send_command("say Не могу найти дерево")
+                    return
 
-            time.sleep(2)
-            # === 4. Крафтим доски из бревен ===
-            send_command("say Делаю доски")
-            add_message_to_chat(user, "MAKC: Делаю доски")
-            wait_for_event("said")
-            print("[Python] Крафтим доски из бревен")
-            send_command(f"craft planks 3")
-            wait_for_event("crafted_successfully")  # craft может использовать событие digging_completed или другое
-            time.sleep(1)
-            # === 5. Крафтим палки из досок ===
-            send_command("say Делаю палки")
-            add_message_to_chat(user, "MAKC: Делаю палки")
-            wait_for_event("said")
-            print("[Python] Крафтим палки из досок")
-            send_command(f"craft stick 1")
-            wait_for_event("crafted_successfully")
-            
-            time.sleep(1)
+                print(f"[Python] Найдены деревья: {trees}")
+                first_tree = trees[0]
+                tree_x, tree_y, tree_z = first_tree['x'], first_tree['y'], first_tree['z']
 
-            # === 6. Крафтим верстак ===
-            send_command("say Делаю верстак")
-            add_message_to_chat(user, "MAKC: Делаю верстак")
-            wait_for_event("said")
-            print("[Python] Крафтим верстак")
-            send_command(f"craft crafting_table 1")
-            wait_for_event("crafted_successfully")
-            time.sleep(2)
+                # === Подходим к дереву ===
+                send_command(f"goto {tree_x} {tree_y} {tree_z}")
+                goal_result = read_output(timeout=20)
+                if goal_result == "goal_reached":
+                    print("[Python] Цель достигнута — подошли к дереву")
 
-            # === 7. Ставим верстак рядом ===
-            print("[Python] Ставим верстак рядом")
-            send_command("place crafting_table")
-            wait_for_event("placed")
-            time.sleep(1)
-            send_command("say Делаю кирку на верстаке")
-            add_message_to_chat(user, "MAKC: Делаю кирку на верстаке")
-            wait_for_event("said")
-            print("[Python] Крафтим деревянную кирку на верстаке")
-            send_command("craft wooden_pickaxe 1")
-            wait_for_event("crafted_successfully")
-            time.sleep(1)
-            send_command(f"say Иду к тебе, {user}!")
-            add_message_to_chat(user, f"MAKC: Иду к тебе, {user}!")
-            wait_for_event("said")
-            send_command(f"follow {user}")
-            wait_for_event("looked_at_player")
-            time.sleep(1)
-            send_command(f"say Держи что ты хотел, {user}")
-            add_message_to_chat(user, f"MAKC: Держи что ты хотел, {user}")
-            wait_for_event("said")
-            send_command("toss wooden_pickaxe")
-            time.sleep(10)
-            print("[Python] Работа успешно завершена!")
+                # === Поворачиваемся на дерево ===
+                send_command(f"look_at {tree_x} {tree_y} {tree_z}")
+                look_at_result = read_output(timeout=10)
+                if look_at_result == "look_at_complete":
+                    print("[Python] Повернулись на дерево")
 
-    except KeyboardInterrupt:
-        print("\n[Python] Остановка работы.")
-        node_process.terminate()
+                # === Копаем дерево ===
+                send_command(f"dig {tree_x} {tree_y} {tree_z}")
+                digging_result = read_output(timeout=20)
+                if digging_result == "digging_completed":
+                    print("[Python] Дерево сломано")
 
+                # === Проверяем инвентарь ===
+                inventory = get_inventory()
+                print("[Python] Инвентарь после добычи:", inventory)
 
-if __name__ == "__main__":
+                print("[Python] Работа завершена!")
+                break
+            else:
+                print("[Python] Команда не распознана")
+        elif result is None:
+            print("[Python] Таймаут ожидания сообщения")
+            break
+
+    print("[Python] Завершение работы")
+
+if __name__ == '__main__':
     main()

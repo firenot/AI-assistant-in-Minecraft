@@ -28,11 +28,18 @@
         <!-- Окно чата -->
         <div class="chat-box" id="chat"></div>
 
-        <!-- Поле ввода и кнопка отправки -->
-        <div style="margin-top: 20px;">
-            <input type="text" id="messageInput" placeholder="Введите команду или сообщение..." style="width: 80%; padding: 10px;" />
-            <button class="task-btn" onclick="sendMessage()">Отправить</button>
-        </div>
+            <!-- Поле ввода и кнопки -->
+            <div style="margin-top: 20px; text-align: center;">
+                <input type="text" id="messageInput" placeholder="Введите команду или сообщение..." style="width: 70%; padding: 10px;" />
+                <button class="task-btn" onclick="sendMessage()">Отправить</button>
+            </div>
+
+            <!-- Кнопки запуска и очистки — по центру -->
+            <div style="margin-top: 15px; text-align: center;">
+                <button class="task-btn" onclick="startServer()" style="background-color: #2e8b57;">Запустить сервер</button>
+                <button class="task-btn" onclick="clearChat()" style="background-color: #cc4444;">Очистить чат</button>
+            </div>
+
 
         <!-- Кнопки задач -->
         <div style="text-align:center; margin-top: 20px;">
@@ -41,36 +48,73 @@
                 {% if i % 5 == 0 %}<br>{% endif %}
             {% endfor %}
             <br><br>
-            <button class="task-btn" id="botToggle" onclick="toggleBot()">Включить бота</button>
+            <button class="task-btn" id="botToggle" onclick="toggleBot()">Подключить к серверу</button>
+            <button class="task-btn" id="aiToggle" onclick="toggleAI()">Запустить ИИ</button>
         </div>
     </div>
 
-    <!-- Настройки сервера -->
+
+        <!-- Настройки сервера -->
     <div id="settings-section" style="display:none;text-align:center;">
-        <form action="/update_server" method="post">
-            <label>Максимум сообщений в чате: <span id="maxMsgValue">{{ settings.max_messages }}</span></label><br>
-            <input type="range" min="5" max="100" value="{{ settings.max_messages }}" onchange="setMaxMessages(this.value)" oninput="document.getElementById('maxMsgValue').innerText = this.value"><br><br>
+        <form id="serverForm">
+            <label>Максимальный контекст для бота: <span id="maxMsgValue">{{ settings.max_messages }}</span></label><br>
+            <input type="range" min="5" max="100" value="{{ settings.max_messages }}"
+                onchange="setMaxMessages(this.value)"
+                oninput="document.getElementById('maxMsgValue').innerText = this.value"><br><br>
+
+            <label>Папка сервера:</label><br>
+            <input type="text" id="serverFolderInput" value="{{ settings.server_folder }}"><br><br>
+            <button class="task-btn" type="button" onclick="saveServerFolder()">Сохранить путь</button><br><br>
 
             <label>IP Сервера:</label><br>
             <input type="text" name="ip" value="{{ settings.server_ip }}"><br>
             <label>Порт:</label><br>
             <input type="number" name="port" value="{{ settings.port }}"><br><br>
-            <button class="task-btn">Сохранить сервер</button>
+
+            <label>Сид мира (level-seed):</label><br>
+            <input type="text" name="level_seed" value="{{ settings.level_seed }}"><br>
+
+            <label>Тип мира (level-type):</label><br>
+
+
+            <select name="level_type" style="width: 80%; padding: 10px; font-size: 16px; border-radius: 5px; margin: 5px;">
+                <option value="DEFAULT" {% if settings.level_type == "DEFAULT" %}selected{% endif %}>Обычный</option>
+                <option value="FLAT" {% if settings.level_type == "FLAT" %}selected{% endif %}>Плоский</option>
+                <option value="AMPLIFIED" {% if settings.level_type == "AMPLIFIED" %}selected{% endif %}>Высокие горы, глубокие ущелья</option>
+                <option value="LARGE_BIOMES" {% if settings.level_type == "LARGE_BIOMES" %}selected{% endif %}>Большие биомы</option>
+                <option value="Single_biome_surface" {% if settings.level_type == "Single_biome_surface" %}selected{% endif %}>Мир-буфет</option>   
+            </select><br><br>
+
+            <button class="task-btn" type="submit">Сохранить сервер</button>
         </form>
     </div>
 </div>
 
 <script>
     let botOn = {{ 'true' if settings.bot_on else 'false' }};
-    document.getElementById("botToggle").innerText = botOn ? "Выключить бота" : "Включить бота";
+    let aiOn = false;
+
+    document.getElementById("botToggle").innerText = botOn ? "Отключиться" : "Подключить к серверу";
+    document.getElementById("aiToggle").innerText = botOn ? "Отключить ИИ" : "Включить ИИ";
 
     function toggleBot() {
         botOn = !botOn;
-        document.getElementById("botToggle").innerText = botOn ? "Выключить бота" : "Включить бота";
+        document.getElementById("botToggle").innerText = botOn ? "Отключиться" : "Подключить к серверу";
         fetch('/toggle_bot', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({state: botOn})
+        });
+    }
+
+    function toggleAI() {
+        aiOn = !aiOn;
+        const btn = document.getElementById("aiToggle");
+        btn.innerText = aiOn ? "Остановить ИИ" : "Запустить ИИ";
+        fetch('/toggle_ai', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({state: aiOn})
         });
     }
 
@@ -117,6 +161,17 @@
         });
     }
 
+    function clearChat() {
+        if (confirm("Вы уверены, что хотите очистить весь чат? Это действие необратимо.")) {
+            fetch('/clear_chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            }).then(() => {
+                loadChatHistory();
+            });
+        }
+    }
+
     // Автоматическое обновление чата каждые 2 секунды
     setInterval(loadChatHistory, 2000);
 
@@ -144,6 +199,56 @@
             body: JSON.stringify({ value: parseInt(value) })
         }).then(loadChatHistory);
     }
+
+    function saveServerFolder() {
+        const folder = document.getElementById("serverFolderInput").value;
+        fetch('/set_server_folder', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({folder: folder})
+        }).then(res => res.json()).then(data => {
+            if (data.status === 'ok') {
+                alert("Папка сохранена.");
+            } else {
+                alert("Ошибка: " + data.message);
+            }
+        });
+    }
+
+    function startServer() {
+        fetch('/start_server', {
+            method: 'POST'
+        }).then(res => res.json()).then(data => {
+            if (data.status === 'ok') {
+                alert("Сервер запущен.");
+            } else {
+                alert("Ошибка запуска: " + data.message);
+            }
+        });
+    }
+
+    // Подключаем обработчик отправки формы
+    document.getElementById('serverForm').addEventListener('submit', function (e) {
+        e.preventDefault(); // не даём браузеру перейти на новую страницу
+
+        const formData = new FormData(e.target);
+        const data = Object.fromEntries(formData.entries());
+
+        fetch('/update_server', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        }).then(res => res.json()).then(result => {
+            if (result.success) {
+                alert("Серверные настройки сохранены.");
+            } else {
+                alert("Ошибка при сохранении.");
+            }
+        }).catch(err => {
+            alert("Ошибка запроса: " + err);
+        });
+    });
+
 
     window.onload = () => {
         loadChatHistory(); // Загрузить историю при открытии

@@ -7,6 +7,35 @@ const fs = require('fs');
 const Vec3 = require('vec3');
 const Recipe=require("prismarine-recipe")("1.12.2").Recipe;
 
+process.on('uncaughtException', (err) => {
+    console.error('[JS FATAL ERROR]', err.message);
+    process.stdout.write(`ERROR uncaughtException ${err.message}\n`);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[JS UNHANDLED REJECTION]', reason.message || reason);
+    process.stdout.write(`ERROR unhandledRejection ${reason.message || reason}\n`);
+});
+
+let blockCache = {}; // Кеш блоков в памяти
+const CACHE_FILE = 'scanned_blocks.json';
+const SCAN_RADIUS = 80;
+
+function loadBlockCacheFromFile() {
+    if (fs.existsSync(CACHE_FILE)) {
+        try {
+            const data = fs.readFileSync(CACHE_FILE, 'utf8');
+            blockCache = JSON.parse(data) || {};
+            console.log(`Кеш загружен: ${Object.keys(blockCache).length} блоков`);
+        } catch (err) {
+            console.error("Ошибка чтения кеша из файла:", err.message);
+        }
+    } else {
+        console.log("Файл кеша не найден — создаём новый");
+        fs.writeFileSync(CACHE_FILE, '{}', 'utf8');
+    }
+}
+loadBlockCacheFromFile();
 // Создаем бота
 const bot = mineflayer.createBot({
     host: 'localhost',
@@ -171,9 +200,9 @@ function loadAllData() {
             const data = fs.readFileSync(outputFile, 'utf8');
             return JSON.parse(data) || {};
         }
-        return {};
+        return {}; // Если файла нет — пустой кеш
     } catch (err) {
-        console.error("Ошибка при чтении файла:", err.message);
+        console.error("❌ Ошибка при чтении кеша:", err.message);
         return {};
     }
 }
@@ -360,13 +389,19 @@ function lookAtEntity(entity) {
 
 async function startScanningCycle() {
     while (true) {
-        console.log("Запуск нового сканирования...");
+        console.log("🔄 Запуск нового сканирования...");
+
+        // Загружаем полный кеш из файла
         const fullCache = loadAllData();
         const currentPos = bot.entity.position;
-        const relevantCache = filterByRadius(fullCache, currentPos, 80);
 
+        // Получаем данные о видимых блоках
         const newScanned = await scanEnvironmentAsync();
 
+        // Фильтруем кеш по радиусу
+        const relevantCache = filterByRadius(fullCache, currentPos, SCAN_RADIUS);
+
+        // Определяем изменения
         const added = {};
         const removed = {};
 
@@ -382,41 +417,40 @@ async function startScanningCycle() {
             }
         }
 
-        const addedCount = Object.keys(added).length;
-        const removedCount = Object.keys(removed).length;
-
+        // Обновляем релевантную часть кеша
         for (const key in added) relevantCache[key] = added[key];
         for (const key in removed) delete relevantCache[key];
 
-        if (addedCount > 0 || removedCount > 0) {
-            try {
-                fs.writeFileSync(outputFile, JSON.stringify(relevantCache, null, 2));
-                console.log(`Добавлено новых блоков: ${addedCount}`);
-                console.log(`Удалено/изменено блоков: ${removedCount}`);
-                console.log(`Данные успешно сохранены в ${outputFile}`);
-            } catch (err) {
-                console.error("Ошибка при записи файла:", err.message);
-            }
-        } else {
-            console.log("Изменений не обнаружено.");
+        // Объединяем актуальный кеш с полным
+        for (const key in relevantCache) {
+            fullCache[key] = relevantCache[key];
         }
 
+        // Сохраняем обновлённый кеш в файл
+        try {
+            fs.writeFileSync(outputFile, JSON.stringify(fullCache, null, 2));
+            console.log(`💾 Данные сохранены в ${outputFile}`);
+        } catch (err) {
+            console.error("❌ Ошибка при записи кеша:", err.message);
+        }
+
+        // Отправляем данные в Python
         const botPosition = bot.entity.position;
         const dataToExport = {
-            added,
-            removed,
-            cache: relevantCache,
             position: {
                 x: Math.floor(botPosition.x),
                 y: Math.floor(botPosition.y),
                 z: Math.floor(botPosition.z)
-            }
+            },
+            cache: fullCache,
+            changes: { added, removed }
         };
 
-        console.log("DATA_READY");
+        console.log("CACHE_UPDATE"); // Событие для Python
         console.log(JSON.stringify(dataToExport));
-        console.log("Ожидаем перед следующим сканированием...\n");
-        await new Promise(r => setTimeout(r, 100)); // Пауза между сканированиями
+
+        // Пауза между сканированиями
+        await new Promise(r => setTimeout(r, 1000)); // 1 секунда
     }
 }
 
@@ -462,7 +496,7 @@ async function lookAround() {
     console.log("EVENT look_finished"); // сигнал Python-боту
 }
 function goToPosition(x, y, z) {
-    const goal = new goals.GoalBlock(x, y, z);
+    const goal = new goals.GoalBlock(x, y, z, 1);
     bot.pathfinder.setGoal(goal);
 }
 
@@ -507,14 +541,26 @@ async function digBlock(x, y, z) {
 
     console.log(`[digBlock] Найден блок: ${block.displayName} (${block.name})`);
 
-    // Проверяем расстояние до блока
+    // Поворачиваемся на блок
     const center = block.position.offset(0.5, 0.5, 0.5);
     await bot.lookAt(center, true);
-
 
     console.log(`[digBlock] 💣 Начинаем копание: ${block.displayName}`);
     await bot.dig(block);
     console.log(`[digBlock] 🎯 Блок успешно сломан: ${block.displayName}`);
+
+    // УДАЛЯЕМ СЛОМАННЫЙ БЛОК ИЗ КЕША
+    const key = `${x},${y},${z}`;
+    try {
+        const fullCache = loadAllData(); // Загружаем текущий кеш
+        delete fullCache[key]; // Удаляем сломанный блок
+
+        fs.writeFileSync(outputFile, JSON.stringify(fullCache, null, 2)); // Перезаписываем файл
+        console.log(`[digBlock] 🔥 Блок удалён из кеша: ${key}`);
+    } catch (err) {
+        console.error(`[digBlock] Ошибка при обновлении кеша:`, err.message);
+    }
+
     process.stdout.write(`EVENT digging_completed ${block.displayName}\n`);
 }
 
