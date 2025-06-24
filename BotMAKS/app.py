@@ -23,8 +23,9 @@ DEFAULT_USER_DATA = {
     "level_seed": "",
     "level_type": "DEFAULT",
     "server_folder": "",
+    "task_flags": {str(i): False for i in range(1, 11)},
     "max_messages": 25,
-    "chat_history": []
+    "chat_history": [],
 }
 
 
@@ -61,8 +62,17 @@ def login():
 
 @app.route('/logout')
 def logout():
+    if 'username' in session:
+        username = session['username']
+        user_data = load_user_data(username)
+
+        # Сбросить все флаги задач
+        user_data['task_flags'] = {str(i): False for i in range(1, 11)}
+        save_user_data(username, user_data)
+
     session.clear()
     return redirect(url_for('login'))
+
 
 @app.route('/main')
 def index():
@@ -143,6 +153,25 @@ def clear_chat():
     save_user_data(username, user_data)
 
     return jsonify(success=True)
+
+@app.route('/activate_task', methods=['POST'])
+def activate_task():
+    if 'username' not in session:
+        return jsonify(success=False)
+
+    task_id = str(request.json.get('task_id'))
+    if task_id not in map(str, range(1, 11)):
+        return jsonify(success=False, message="Некорректный ID задачи")
+
+    username = session['username']
+    user_data = load_user_data(username)
+
+    # Сбросить все флаги, кроме выбранного
+    user_data['task_flags'] = {str(i): (str(i) == task_id) for i in range(1, 11)}
+
+    save_user_data(username, user_data)
+    return jsonify(success=True)
+
 
 @app.route('/toggle_bot', methods=['POST'])
 def toggle_bot():

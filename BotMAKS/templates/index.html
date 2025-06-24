@@ -44,7 +44,7 @@
         <!-- Кнопки задач -->
         <div style="text-align:center; margin-top: 20px;">
             {% for i in range(1, 11) %}
-                <button class="task-btn" onclick="runTask({{ i }})">Задача {{ i }}</button>
+                <button class="task-btn" onclick="runTask({{ i }}); activateTaskFlag({{ i }});">Задача {{ i }}</button>
                 {% if i % 5 == 0 %}<br>{% endif %}
             {% endfor %}
             <br><br>
@@ -80,7 +80,7 @@
             <select name="level_type" style="width: 80%; padding: 10px; font-size: 16px; border-radius: 5px; margin: 5px;">
                 <option value="DEFAULT" {% if settings.level_type == "DEFAULT" %}selected{% endif %}>Обычный</option>
                 <option value="FLAT" {% if settings.level_type == "FLAT" %}selected{% endif %}>Плоский</option>
-                <option value="AMPLIFIED" {% if settings.level_type == "AMPLIFIED" %}selected{% endif %}>Высокие горы, глубокие ущелья</option>
+                <option value="AMPLIFIED" {% if settings.level_type == "AMPLIFIED" %}selected{% endif %}>Расширенный</option>
                 <option value="LARGE_BIOMES" {% if settings.level_type == "LARGE_BIOMES" %}selected{% endif %}>Большие биомы</option>
                 <option value="Single_biome_surface" {% if settings.level_type == "Single_biome_surface" %}selected{% endif %}>Мир-буфет</option>   
             </select><br><br>
@@ -172,8 +172,7 @@
         }
     }
 
-    // Автоматическое обновление чата каждые 2 секунды
-    setInterval(loadChatHistory, 2000);
+    setInterval(loadChatHistory, 1000);
 
     document.getElementById('messageInput').addEventListener('keydown', function(e) {
         if (e.key === 'Enter' || e.keyCode === 13) {
@@ -186,6 +185,19 @@
         document.getElementById('settings-section').style.display = 'none';
         loadChatHistory();
     }
+
+    function activateTaskFlag(taskId) {
+        fetch('/activate_task', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: taskId })
+        }).then(res => res.json()).then(result => {
+            if (!result.success) {
+                alert("Ошибка активации задачи: " + result.message);
+            }
+        });
+    }
+
 
     function showSettings() {
         document.getElementById('chat-section').style.display = 'none';
