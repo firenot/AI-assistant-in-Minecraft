@@ -45,7 +45,6 @@
    ```bash
     python start.py
 
-
 <a name="en"></a>
 ## 🧠 AI Assistant in Minecraft
 
