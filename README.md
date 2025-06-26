@@ -30,6 +30,7 @@
 - Python 3.11
 - Node.js (для JS-зависимостей)
 - Библиотеки: зависимости из <code>requirements.txt</code> и <code>package.json</code>
+- Установить модель Qwen: https://huggingface.co/Qwen/Qwen2.5-3B-Instruct
 
 ---
 
@@ -69,6 +70,7 @@
 - Python 3.11
 - Node.js (for JS dependencies)
 - Libraries: dependencies from <code>requirements.txt</code> and <code>package.json</code>
+- Install the Qwen model: https://huggingface.co/Qwen/Qwen2.5-3B-Instruct
 
 ---
 
