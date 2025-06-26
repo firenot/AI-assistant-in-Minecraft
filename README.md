@@ -1,4 +1,4 @@
-# 🧠 AI-ассистент в Minecraft
+# 🧠 AI Assistant in Minecraft
 
 <p align="center">
   <a href="#ru">🇷🇺 Русский</a> | <a href="#en">🇬🇧 English</a>
