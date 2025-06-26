@@ -32,4 +32,5 @@
    npm install
 
 2. Запусти бота:
+   ```bash
     python start.py
