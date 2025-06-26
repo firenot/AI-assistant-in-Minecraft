@@ -1,11 +1,14 @@
 const mineflayer = require('mineflayer');
 const pathfinder = require('mineflayer-pathfinder');
+const CollectBlock = require('mineflayer-collectblock');
 const { Movements, goals } = pathfinder;
 const mcData = require('minecraft-data');
 console.log("Поддерживаемые версии:", mcData.supportedVersions);
-const fs = require('fs');
 const Vec3 = require('vec3');
 const Recipe=require("prismarine-recipe")("1.12.2").Recipe;
+const fs = require('fs');
+const path = require('path');
+
 
 process.on('uncaughtException', (err) => {
     console.error('[JS FATAL ERROR]', err.message);
@@ -18,7 +21,15 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 let blockCache = {}; // Кеш блоков в памяти
-const CACHE_FILE = 'scanned_blocks.json';
+let entityCache = {};
+
+
+const CACHE_FILE = "C:\\Projects\\BotMAKC\\BOT\\scanned_blocks.json";
+
+const ENTITY_FILE = "C:\\Projects\\BotMAKC\\BOT\\entities.json";
+
+loadEntityCacheFromFile();
+
 const SCAN_RADIUS = 80;
 
 function loadBlockCacheFromFile() {
@@ -44,23 +55,78 @@ const bot = mineflayer.createBot({
     version: '1.12.2'
 });
 
+
+// Регулярная проверка: продолжать ли атаку
+setInterval(() => {
+    if (currentAggressor && currentAggressor.alive) {
+        const distance = bot.entity.position.distanceTo(currentAggressor.position);
+        if (distance > 10) {
+            bot.pvp.stop();
+            bot.pathfinder.setGoal(null);
+            currentAggressor = null;
+        }
+    }
+}, 2000);
+
 // Подготавливаем данные Minecraft
 let registry = null;
+
 
 bot.on('spawn', () => {
     console.log("Бот заспавнился");
 
     registry = mcData(bot.version);
+
     setInterval(sendInventoryUpdate, 2000);
     bot.loadPlugin(pathfinder.pathfinder);
     const movements = new Movements(bot, registry);
     bot.pathfinder.setMovements(movements);
+
+    try {
+        const { plugin: PVP } = require('mineflayer-pvp');
+        bot.loadPlugin(PVP);
+        console.log("mineflayer-pvp успешно загружен");
+    } catch (err) {
+        console.error("Ошибка загрузки mineflayer-pvp:", err.message);
+    }
+
     startScanningCycle();
     bot.on('chat', (username, message) => {
     if (username === bot.username) return; // Игнорируем собственные сообщения
-    console.log(`EVENT message ${username}:${message}`);
+    console.log(`EVENT message ${username} ${message}`);
     });
 });
+
+
+bot._client.on("hurt_animation", (packet) => {
+        const entity = bot.entities[packet.entityId];
+        if (!entity || !entity.alive) return;
+
+        // === Проверяем, кто нанёс урон ===
+        let aggressor = null;
+        if (packet.sourceDirectId && bot.entities[packet.sourceDirectId]) {
+            aggressor = bot.entities[packet.sourceDirectId];
+        } else if (packet.sourceCauseId && bot.entities[packet.sourceCauseId]) {
+            aggressor = bot.entities[packet.sourceCauseId];
+        }
+
+        if (!aggressor || !aggressor.alive) return;
+
+        // === Сценарий 1: Бот получил урон → защищаемся ===
+        if (aggressor.id !== bot.entity.id && entity.id === bot.entity.id) {
+            console.log(`Бот был атакован: ${aggressor.displayName}`);
+            startAttack(aggressor);
+        }
+        // === Сценарий 2: Враг рядом получил урон → атакуем его ===
+        else if (aggressor.kind === 'Hostile mobs' || aggressor.type === 'mob') {
+            const distance = bot.entity.position.distanceTo(aggressor.position);
+            if (distance <= 10) {
+                console.log(`Враг рядом получил урон: ${aggressor.displayName}`);
+                startAttack(aggressor);
+            }
+        }
+    });
+
 
 // Обработчики событий pathfinder
 bot.on('goal_reached', () => {
@@ -78,13 +144,13 @@ bot.on('digging', (block) => {
 
 
 // Файл для сохранения данных о блоках
-const outputFile = 'scanned_blocks.json';
+const outputFile = CACHE_FILE;
 
 
 // === Основная функция сканирования ===
 async function scanEnvironmentAsync() {
-    const steps = 0.5;
-    const maxDistance = 80;
+    const steps = 0.7;
+    const maxDistance = 40;
 
     const yaw = bot.entity.yaw;
     const pitch = bot.entity.pitch;
@@ -121,29 +187,126 @@ async function scanZone(start, direction, hStart, hEnd, vStart, vEnd, stepAngle,
     }
 }
 
-function castRay(start, direction, stepSize, maxDistance, output) {
+function loadEntityCacheFromFile() {
+    if (fs.existsSync(ENTITY_FILE)) {
+        try {
+            const data = fs.readFileSync(ENTITY_FILE, 'utf8');
+            entityCache = JSON.parse(data) || {};
+        } catch (err) {
+            console.error("Ошибка чтения entities.json:", err.message);
+        }
+    } else {
+        fs.writeFileSync(ENTITY_FILE, '{}', 'utf8');
+    }
+}
+
+function attackEntityByName(displayName) {
+    // Ищем ближайшего моба с нужным displayName
+    let closestEntity = null;
+    let minDistance = Infinity;
+
+    for (const id in bot.entities) {
+        const entity = bot.entities[id];
+
+        // Пропускаем самого бота и несуществующие сущности
+        if (!entity || entity.id === bot.entity.id) continue;
+
+        // Сравниваем displayName (регистронезависимо)
+        if (entity.displayName && entity.displayName.toLowerCase() === displayName.toLowerCase()) {
+            const distance = bot.entity.position.distanceTo(entity.position);
+            if (distance < minDistance) {
+                minDistance = distance;
+                closestEntity = entity;
+            }
+        }
+    }
+
+    if (!closestEntity) {
+        console.log(`Не найдено сущностей с названием "${displayName}" рядом`);
+        return;
+    }
+
+    console.log(`Найдена цель: ${closestEntity.displayName} на расстоянии ${minDistance.toFixed(2)} блоков`);
+
+    const sword = bot.inventory.items().find(item => item.name.includes('sword'));
+
+      if (sword) {
+        bot.equip(sword, 'hand', (err) => {
+          if (err) {
+            console.log('Не удалось экипировать меч:', err.message);
+          } else {
+            console.log(`Меч ${sword.name} экипирован`);
+          }})};
+    // Устанавливаем цель для pathfinder и начинаем атаку
+    currentAggressor = closestEntity;
+    const goal = new goals.GoalFollow(closestEntity, 1.0);
+    bot.pathfinder.setGoal(goal, true);
+
+    bot.pvp.attack(closestEntity);
+
+    clearInterval(bot._attackInterval);
+}
+
+function saveEntityCacheToFile() {
+    try {
+        fs.writeFileSync(ENTITY_FILE, JSON.stringify(entityCache, null, 2), 'utf8');
+    } catch (err) {
+        console.error("Ошибка записи entities.json:", err.message);
+    }
+}
+
+function castRay(start, direction, stepSize, maxDistance, outputBlocks) {
     for (let t = 0; t <= maxDistance; t += stepSize) {
         const x = start.x + direction.x * t;
         const y = start.y + direction.y * t;
         const z = start.z + direction.z * t;
 
+        // Сначала проверяем блоки
         const blockPos = new Vec3(Math.floor(x), Math.floor(y), Math.floor(z));
-
         if (blockPos.y < 0 || blockPos.y >= 256) continue;
-
         const block = bot.blockAt(blockPos);
         if (block && block.type !== 0) {
             const key = `${blockPos.x},${blockPos.y},${blockPos.z}`;
             const name = block.displayName || `id:${block.type}`;
-
-            if (!output[key]) {
-                output[key] = name;
+            if (!outputBlocks[key]) {
+                outputBlocks[key] = name;
             }
-            return; // Прерываем луч при нахождении первого блока
+            return; // Прерываем луч при нахождении блока
+        }
+
+        // Теперь проверяем сущности
+        const entities = bot.entities;
+        for (const id in entities) {
+            const entity = entities[id];
+            if (!entity.position) continue;
+
+            const distance = entity.position.distanceTo(new Vec3(x, y, z));
+            if (distance < 0.7) {
+                const entityType = entity.displayName;
+                const uuid = entity.uuid;
+
+                if (!entityType || !uuid) continue;
+
+                // === ИСПРАВЛЕНИЕ ЗДЕСЬ: всегда работаем с объектом ===
+                if (!entityCache[entityType]) {
+                    entityCache[entityType] = {};
+                }
+
+                // Если такой UUID ещё не был добавлен
+                if (!entityCache[entityType][uuid]) {
+                    entityCache[entityType][uuid] = {
+                        x: Math.round(entity.position.x * 10) / 10,
+                        y: Math.round(entity.position.y * 10) / 10,
+                        z: Math.round(entity.position.z * 10) / 10
+                    };
+                    saveEntityCacheToFile();
+                    console.log(`Обнаружена сущность: ${entityType} | UUID: ${uuid}`);
+                }
+                return;
+            }
         }
     }
 }
-
 // Вспомогательные функции
 
 function getDirectionVector(yaw, pitch) {
@@ -385,6 +548,9 @@ function lookAtEntity(entity) {
     process.stdout.write(`EVENT looked_at_player ${entity.username}\n`);
 }
 
+let currentAggressor = null;
+
+
 // === Цикл сканирования ===
 
 async function startScanningCycle() {
@@ -448,6 +614,60 @@ async function startScanningCycle() {
 
         console.log("CACHE_UPDATE"); // Событие для Python
         console.log(JSON.stringify(dataToExport));
+
+        for (const id in bot.entities) {
+            const entity = bot.entities[id];
+
+            // Пропускаем игрока
+            if (entity.username) continue;
+
+            const entityType = entity.displayName;
+            if (!entityType || entityType === 'player') continue;
+
+            const uuid = entity.uuid;
+            const pos = entity.position;
+            if (!pos) continue;
+
+            // Инициализируем тип моба в кеше, если ещё не было
+            if (!entityCache[entityType]) {
+                entityCache[entityType] = {};
+            }
+
+            // Создаем новую позицию с округлением
+            const newPos = {
+                x: Math.round(pos.x * 10) / 10,
+                y: Math.round(pos.y * 10) / 10,
+                z: Math.round(pos.z * 10) / 10
+            };
+
+            // Проверяем, есть ли такая запись или изменилась ли позиция
+            const existing = entityCache[entityType][uuid];
+            if (!existing || existing.x !== newPos.x || existing.y !== newPos.y || existing.z !== newPos.z) {
+                entityCache[entityType][uuid] = newPos;
+                console.log(`Моб обновлён: ${entityType} | UUID: ${uuid} | Позиция: ${newPos.x}, ${newPos.y}, ${newPos.z}`);
+            }
+        }
+
+        // === Удаление умерших/исчезнувших мобов ===
+        for (const entityType in entityCache) {
+            const mobs = entityCache[entityType];
+            for (const uuid in mobs) {
+                // Проверяем, существует ли такой моб сейчас
+                const exists = Object.values(bot.entities).some(e => e.uuid === uuid);
+                if (!exists) {
+                    delete entityCache[entityType][uuid];
+                    console.log(`Моб удалён из кеша: ${entityType} | UUID: ${uuid}`);
+                }
+            }
+            // Удаляем тип моба, если он стал пустым
+            if (Object.keys(entityCache[entityType]).length === 0) {
+                delete entityCache[entityType];
+            }
+        }
+
+        // === Сохранение изменений ===
+        saveEntityCacheToFile();
+        console.log(`💾 Координаты мобов обновлены в ${ENTITY_FILE}`);
 
         // Пауза между сканированиями
         await new Promise(r => setTimeout(r, 1000)); // 1 секунда
@@ -711,6 +931,18 @@ async function handleCommand(cmd) {
             }
             break;
 
+        case 'stop_kill':
+            if (currentAggressor) {
+                bot.pvp.stop();
+                bot.pathfinder.setGoal(null);
+                currentAggressor = null;
+                isHunting=false;
+                console.log("Атака прекращена");
+            } else {
+                console.log("Нет активной цели для атаки");
+            }
+            break;
+
         case 'toss':
             if (args.length === 2){
             const itemEntry = registry.itemsByName[args[1]].id
@@ -727,7 +959,7 @@ async function handleCommand(cmd) {
             sendMessageToChat(messageToSend);
             console.log("EVENT said");
             break;
-        
+
         case 'follow':
             if (args.length < 2) {
                 console.log("Использование: follow <имя_игрока>");
@@ -736,6 +968,37 @@ async function handleCommand(cmd) {
             const playerName = args[1];
             followPlayer(playerName);
             break;
+
+        case 'kill':
+            if (args.length < 3) {
+                console.log("Использование: kill <entityDisplayName> <количество>");
+                return;
+            }
+            isHunting = true;
+            const targetName = args[1];
+            const repetitions = args[2];
+            if (repetitions>0){
+                let count = 0;
+
+                function loop() {
+                    if (count >= repetitions) return;
+                    attackEntityByName(targetName);
+                    count++;
+                    if (isHunting===false){return false;}
+                    setTimeout(loop, 15000);
+                    }
+
+                loop();
+                }
+            else{
+                const intervalId = setInterval(() => {
+                    if (isHunting===false){clearInterval(intervalId);}
+                    attackEntityByName(targetName);
+                }, 2000);
+            }
+                break;
+
+
 
 
         default:
